@@ -5,6 +5,7 @@ import json
 import re
 import socket
 import sys
+import time
 
 CONFIG = {
     'modes': {
@@ -12,21 +13,25 @@ CONFIG = {
             'cmd': 'VOLT:DC',
             'range': ['200mv', '2v', '20v', '200v', '1000v',
                 'auto', 'min', 'max', 'def' ],
+            'nplc': ['0.3','1','10','min','max','def'],
         },
         'volts_ac': {
             'cmd': 'VOLT:AC',
             'range': ['200mv', '2v', '20v', '200v', '1000v',
                 'auto', 'min', 'max', 'def' ],
+            'nplc': ['0.3','1','10','min','max','def'],
         },
         'current_dc': {
             'cmd': 'CURR:DC',
             'range': ['200ua', '2ma', '20ma', '200ma', '2a', '10a',
                 'auto', 'min', 'max', 'def' ],
+            'nplc': ['0.3','1','10','min','max','def'],
         },
         'current_ac': {
             'cmd': 'CURR:AC',
             'range': ['20ma', '200ma', '2a', '10a',
                 'auto', 'min', 'max', 'def' ],
+            'nplc': ['0.3','1','10','min','max','def'],
         },
         'temperature': {
             'cmd': 'TEMP',
@@ -37,23 +42,23 @@ CONFIG = {
             'cmd': 'RES',
             'range': ['200', '2k', '20k', '200k', '2m', '10m', '100m',
                 'auto', 'min', 'max', 'def' ],
+            'nplc': ['0.3','1','10','min','max','def'],
         },
         'resistance_4w': {
             'cmd': 'FRES',
             'range': ['200', '2k', '20k', '200k', '2m', '10m', '100m',
                 'auto', 'min', 'max', 'def' ],
+            'nplc': ['0.3','1','10','min','max','def'],
         },
         'frequency': {
             'cmd': 'FREQ',
-            'range': [],
+            'nplc': ['1ms','10ms','1s','min','max','def'],
         },
         'diode': {
             'cmd': 'DIOD',
-            'range': [],
         },
         'continuity': {
             'cmd': 'CONT',
-            'range': [],
         },
     },
     'status': {
@@ -67,6 +72,12 @@ CONFIG = {
         'sample_count': 'SAMP:COUN?',
     }
 }
+
+DEBUG = False
+
+def debugprint(*a, **d):
+    if DEBUG:
+        print(*a, **d)
 
 class SDMException(Exception):
     def __init__(self, message):
@@ -93,7 +104,7 @@ class SDM3055(object):
 
     def _send_command(self, command):
         os = command.encode('ascii', errors='none')
-        print(f' >> {os}')
+        debugprint(f' >> {os}')
         self.s.sendall(os + b'\n')
 
     def _read_response(self):
@@ -108,7 +119,7 @@ class SDM3055(object):
         if not line:
             self.sf.close()
             return None
-        print(f' << {line}')
+        debugprint(f' << {line}')
         line = line.strip()
         line = re.sub(r'^"(.*)"$', r'\1', line)
         return line
@@ -137,25 +148,50 @@ class SDM3055(object):
     def reset(self):
         self._send_command('*RST')
 
-    def configure(self, mode='volts_dc', rnge=None):
+    def configure(self, mode='volts_dc', rnge=None, nplc=None):
         if mode not in CONFIG['modes']:
             m = ','.join(CONFIG['modes'].keys())
             raise SDMException(f'mode should be one of: {m}')
         if rnge is not None:
             rnge = rnge.lower()
-            if rnge not in CONFIG['modes'][m]['range']:
-                rs = ','.join(CONFIG['modes'][m]['range'])
-                raise SDMException(f'second argument should be on of {rs}')
+            debugprint(CONFIG['modes'][mode])
+            if rnge not in CONFIG['modes'][mode]['range']:
+                rs = ','.join(CONFIG['modes'][mode]['range'])
+                raise SDMException(f'second argument should be one of {rs}')
 
         c = CONFIG['modes'].get(mode)['cmd']
         if rnge is not None:
             c += f' {rnge}'
         self._send_command(f'CONF:{c}')
 
+        if nplc is not None:
+            if nplc not in CONFIG['modes'].get(mode)['nplc']:
+                raise SDMException(f'inappropriate nplc value for mode {mode}')
+            c = CONFIG['modes'].get(mode)['cmd']
+            c = f'SENS:{c}:NPLC  {nplc}'
+            self._send_command(c)
+
     def getStatus(self):
         r = { i[0]: self._send_and_read(i[1]) for i in CONFIG['status'].items() }
         return r
 
+
+def list_modes():
+    return sorted(CONFIG['modes'].keys())
+
+def list_ranges():
+    rdict = {}
+    for v in CONFIG['modes'].values():
+        if 'range' in v:
+            rdict.update({ x:1 for x in v['range']})
+    return sorted(rdict.keys())
+
+def list_nplcs():
+    ndict = {}
+    for v in CONFIG['modes'].values():
+        if 'nplc' in v:
+            ndict.update({ x:1 for x in v['nplc']})
+    return sorted(ndict.keys())
 
 def command():
     
@@ -164,25 +200,29 @@ def command():
         parser.add_argument(
             '--config', '-c',
             help='Configure the DMM',
-            choices=CONFIG['modes'].keys(),
+            choices=list_modes(),
             type=str,  
             action='store',
             default=None
         )
-
-        rdict = {}
-        for v in CONFIG['modes'].values():
-            rdict.update({ x:1 for x in v['range']})
 
         parser.add_argument(
             '--range', '-r',
             help='Configure mode range',
-            choices=sorted(rdict.keys()),
+            choices=list_ranges(),
             type=str,  
             action='store',
             default=None
         )
 
+        parser.add_argument(
+            '--nplc', '-n',
+            help='Configure nplc count',
+            choices=list_nplcs(),
+            type=str,  
+            action='store',
+            default=None
+        )
         parser.add_argument(
             '--ip', '-i',
             help='IP address',
@@ -202,13 +242,27 @@ def command():
             help='Measurements to get',
             action='store',
             type=int,
-            default=1,
+            default=0,
         )
 
         parser.add_argument(
             '--reset',
             help='reset the instrument',
             action='store_true',
+        )
+        parser.add_argument(
+            '--loopdelay', '-l',
+            help='loop with delay <n>',
+            type=float,
+            action='store',
+            default=0,
+        )
+        parser.add_argument(
+            '--raw',
+            help='send a command directly to the dmm',
+            type=str,
+            action='store',
+            default=None,
         )
 
         return parser.parse_args()
@@ -221,16 +275,30 @@ def command():
         s.reset()
 
     if args.config is not None:
-        s.configure(args.config, args.range)
+        s.configure(args.config, args.range, args.nplc)
+
+    if args.raw is not None:
+        print(s._send_command(args.raw))
 
     if args.status:
         print(json.dumps(s.getStatus(), indent=2))
 
-    if args.meas == 1:
+    if args.loopdelay > 0:
+        while True:
+            print(s.meas())
+            time.sleep(args.loopdelay)
+    elif args.meas == 1:
         print(s.meas())
     elif args.meas > 1:
         print(json.dumps(s.measN(args.meas), indent=2))
 
+    # how leave the instrument free-running?
+    #s._send_command('SAMP:COUN 100')
+    #s._send_command('TRIG:COUN inf')
+    #s._send_command('TRIG:SOUR imm')
+    #s._send_command('INIT')
+    #s._send_command('TRIG:DEL:AUTO ON')
+    #s._send_command('MEAS')
 
 if __name__ == '__main__':
 
