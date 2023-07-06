@@ -59,6 +59,13 @@ def getArgs():
         default='500',
     )
 
+    parser.add_argument(
+        '--save', '-s',
+        help='save to file',
+        action='store',
+        type=argparse.FileType('w'),
+        nargs='?',
+    )
     return parser.parse_args()
 
 
@@ -80,9 +87,12 @@ def start_plotter(s, args):
         while len(y_data) > args.width:
             y_data.pop(0)
 
-        x_data.append(datetime.datetime.now())
+        t = datetime.datetime.now()
+        x_data.append(t)
 
         nv = s.meas() * 1000
+        if args.save is not None:
+            args.save.write(','.join((t.isoformat(), str(nv), '\n')))
 
         y_data.append(nv)
         line.set_data(x_data, y_data)
